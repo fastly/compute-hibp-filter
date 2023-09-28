@@ -67,9 +67,9 @@ $ fastly service-version activate --version=latest
 
 Visit the service with your web browser using the domain provided in step 4. You will see a page with a form to submit a password. Enter a password and submit the form. The service will respond with a page that shows the password and a header `Fastly-Compromised-Password` indicating if the password is compromised. 
 
-<h3 align="center">
+<div align="center">
   <img src="static/sample.png" alt="Sample with Fastly-Compromised-Password header" width="700px" />
-</h3>
+</div>
 
 ## Trouble-shooting
 Use the following command to tail the service logs. When the KV store is not linked to the service, the check is skipped and an error message is logged.
