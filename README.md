@@ -40,13 +40,13 @@ Update the authors field in the `fastly.toml` and the `KV_STORE_NAME` in [config
 
 ### 3. Generate and upload filters
 ```sh
-$ go run cmd/upload/main.go --token <Fastly_API_token> 
+$ go run cmd/upload/main.go -token <Fastly_API_token> 
 ```
 This step pulls the hashes from HIBP API, creates the filters for a prefix (starting from 000 to FFF), and uploads the filters to the KV store. Allow up to a couple of hours for this step to complete.
 
 An additional `-from` flag is available to restart the upload from a specific prefix. This is useful in case the upload is interrupted midway.
 ```sh
-$ go run cmd/upload/main.go --token <Fastly_API_token> -from A0F
+$ go run cmd/upload/main.go -token <Fastly_API_token> -from A0F
 ```
 
 ### 4. Deploy the Compute@Edge service
@@ -68,7 +68,7 @@ $ fastly service-version activate --version=latest
 Visit the service with your web browser using the domain provided in step 4. You will see a page with a form to submit a password. Enter a password and submit the form. The service will respond with a page that shows the password and a header `Fastly-Compromised-Password` indicating if the password is compromised. 
 
 <h3 align="center">
-  <img src="static/sample.png" alt="Sample with Fastly-Compromised-Password header" width="700px"></a>
+  <img src="static/sample.png" alt="Sample with Fastly-Compromised-Password header" width="700px" />
 </h3>
 
 ## Trouble-shooting
