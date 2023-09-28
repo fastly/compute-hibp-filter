@@ -1,0 +1,26 @@
+# This file describes a Fastly Compute@Edge package. To learn more visit:
+# https://developer.fastly.com/reference/fastly-toml/
+
+authors = ["email_address@domain.com"]
+description = "Service to verify if a password is compromised using its sha1 hash."
+language = "go"
+manifest_version = 3
+name = "compute-hibp-filter"
+service_id = ""
+
+[local_server]
+
+  [local_server.backends]
+
+    [local_server.backends.httpbin]
+      override_host = "httpbin.org"
+      url = "https://httpbin.org/"
+
+[setup]
+
+  [setup.backends]
+
+    [setup.backends.httpbin]
+      address = "httpbin.org"
+      description = "A simple HTTP Request & Response Service."
+      port = 443
