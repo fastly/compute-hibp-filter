@@ -13,7 +13,7 @@ This implementation used [httpbin](https://httpbin.org/) as the backend, but you
 
 ## Prerequisites
 
-You will need a Fastly [account](https://www.fastly.com/signup/) with full access, and also have the Fastly CLI and other dependencies listed below installed on your workstation. You will also need to setup a Fastly API token which will be used to upload the generated filters to the KV store.
+You will need full access to a Fastly [account](https://www.fastly.com/signup/) with KV store enabled. The Fastly CLI and other dependencies listed below should be installed on your workstation. You will also need to setup a Fastly API token which will be used to upload the generated filters to the KV store.
 
 ## Dependencies
 
