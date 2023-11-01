@@ -12,7 +12,24 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"time"
+
+	"github.com/hashicorp/go-retryablehttp"
 )
+
+var (
+	globalHTTPClient *http.Client = constructRetryableHttpClient()
+)
+
+func constructRetryableHttpClient() *http.Client {
+	retryable_http_client := retryablehttp.NewClient()
+	retryable_http_client.HTTPClient.Transport.(*http.Transport).MaxIdleConnsPerHost = 100
+	retryable_http_client.Logger = nil
+	retryable_http_client.RetryMax = config.HTTP_CLIENT_MAX_RETRY
+	retryable_http_client.RetryWaitMin = config.HTTP_CLIENT_RETRY_WAIT_MIN
+	retryable_http_client.RetryWaitMax = config.HTTP_CLIENT_RETRY_WAIT_MAX
+	return retryable_http_client.StandardClient()
+}
 
 func generatePrefixes(prefix_level int, start_from int64) []string {
 	var prefixes []string
@@ -25,21 +42,44 @@ func generatePrefixes(prefix_level int, start_from int64) []string {
 	return prefixes
 }
 
-func getHashesForRange(hash_prefix string) []string {
+func getHashesForRange(hash_prefix string, hibp_http_client *http.Client) []string {
 	var hashes []string
-	// Get hashes from body of https://api.pwnedpasswords.com/range/C01D5
-	resp, err := http.Get("https://api.pwnedpasswords.com/range/" + hash_prefix)
-	if err != nil {
-		log.Fatal("Error retrieving hashes for the prefix "+hash_prefix, err)
-	}
-	defer resp.Body.Close()
-	scanner := bufio.NewScanner(resp.Body)
-	length_of_suffix := 40 - len(hash_prefix) // 40 is the length of the sha1 hash in hex
+	var hasValidResponseReceived bool = false
+	var retry_attempts_left = config.MAX_RETRY_FOR_INVALID_200_RESPONSES
 
-	for scanner.Scan() {
-		full_hash := hash_prefix + scanner.Text()[:length_of_suffix]
-		hashes = append(hashes, full_hash)
+	for !hasValidResponseReceived && retry_attempts_left > 0 {
+		retry_attempts_left--
+		// Get hashes from body of https://api.pwnedpasswords.com/range/C01D5
+		resp, err := hibp_http_client.Get("https://api.pwnedpasswords.com/range/" + hash_prefix)
+		if err != nil {
+			log.Fatal("Error retrieving hashes for the prefix "+hash_prefix, err)
+		}
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		length_of_suffix := 40 - len(hash_prefix) // 40 is the length of the sha1 hash in hex
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			if len(line) < length_of_suffix {
+				log.Println("Unexpected response:", line, "Status code:", resp.StatusCode, "Retrying...")
+				// Prepare for retry after a short sleep. Since the status code is 200, it's not handled by retryablehttp
+				hashes = nil
+				hasValidResponseReceived = false
+				time.Sleep(config.WAIT_TIME_FOR_INVALID_200_RESPONSES)
+				break
+			} else {
+				hasValidResponseReceived = true
+				full_hash := hash_prefix + line[:length_of_suffix]
+				hashes = append(hashes, full_hash)
+			}
+		}
+
 	}
+
+	if len(hashes) == 0 {
+		log.Fatal("Unable to get hashes for prefix", hash_prefix, "after", config.MAX_RETRY_FOR_INVALID_200_RESPONSES, "attempts.", "Pls try again later using -from", hash_prefix[:3])
+	}
+
 	return hashes
 }
 
@@ -81,7 +121,7 @@ func main() {
 		for _, hash_prefix_addition := range hash_prefix_additions {
 			hash_prefix := filter_prefix + hash_prefix_addition
 			go func(hash_prefix string) {
-				hashes := getHashesForRange(hash_prefix)
+				hashes := getHashesForRange(hash_prefix, globalHTTPClient)
 				queue <- &hashes
 			}(hash_prefix)
 		}
@@ -100,7 +140,7 @@ func main() {
 		hibp.WriteFilterToWriter(filter, w)
 		data := b.Bytes()
 		log.Println("Uploading filter for prefix", filter_prefix, "with size:", len(data))
-		store.UploadFilterToStore(*token, store_obj, filter_prefix, data)
+		store.UploadFilterToStore(*token, store_obj, filter_prefix, data, globalHTTPClient)
 	}
 
 	log.Println("Done uplaoding filters to store", config.KV_STORE_NAME, "with store_id", store_obj.Id)
