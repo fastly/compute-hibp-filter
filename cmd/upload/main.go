@@ -6,15 +6,21 @@ import (
 	"compute-hibp-filter/config"
 	"compute-hibp-filter/hibp"
 	"compute-hibp-filter/store"
+	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
+)
+
+var (
+	globalHTTPClient   *http.Client = constructRetryableHttpClient()
+	failedHashPrefixes []string
 )
 
 func generatePrefixes(prefix_level int, start_from int64) []string {
@@ -30,43 +36,60 @@ func generatePrefixes(prefix_level int, start_from int64) []string {
 
 func getHashesForRange(hash_prefix string, hibp_http_client *http.Client) []string {
 	var hashes []string
-	var hasValidResponseReceived bool = false
-	var retry_attempts_left = config.MAX_RETRY_FOR_INVALID_200_RESPONSES
 
-	for !hasValidResponseReceived && retry_attempts_left > 0 {
-		retry_attempts_left--
-		// Get hashes from body of https://api.pwnedpasswords.com/range/C01D5
-		resp, err := hibp_http_client.Get("https://api.pwnedpasswords.com/range/" + hash_prefix)
-		if err != nil {
-			log.Fatal("Error retrieving hashes for the prefix "+hash_prefix, err)
+	// Get hashes from body of https://api.pwnedpasswords.com/range/C01D5
+	resp, err := hibp_http_client.Get("https://api.pwnedpasswords.com/range/" + hash_prefix)
+	if err != nil {
+		log.Fatal("Error retrieving hashes for the prefix "+hash_prefix, err)
+	}
+	defer resp.Body.Close()
+	scanner := bufio.NewScanner(resp.Body)
+	length_of_suffix := 40 - len(hash_prefix) // 40 is the length of the sha1 hash in hex
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) < length_of_suffix {
+			log.Println("Skipping unexpected response:", line, "Status code:", resp.StatusCode, resp.Request.URL)
+		} else {
+			full_hash := hash_prefix + line[:length_of_suffix]
+			hashes = append(hashes, full_hash)
 		}
-		defer resp.Body.Close()
-		scanner := bufio.NewScanner(resp.Body)
-		length_of_suffix := 40 - len(hash_prefix) // 40 is the length of the sha1 hash in hex
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			if len(line) < length_of_suffix {
-				log.Println("Unexpected response:", line, "Status code:", resp.StatusCode, "Retrying...")
-				// Prepare for retry after a short sleep. Since the status code is 200, it's not handled by retryablehttp
-				hashes = nil
-				hasValidResponseReceived = false
-				time.Sleep(time.Second)
-				break
-			} else {
-				hasValidResponseReceived = true
-				full_hash := hash_prefix + line[:length_of_suffix]
-				hashes = append(hashes, full_hash)
-			}
-		}
-
 	}
 
 	if len(hashes) == 0 {
-		log.Fatal("Unable to get hashes for prefix", hash_prefix, "after", config.MAX_RETRY_FOR_INVALID_200_RESPONSES, "attempts.", "Pls try again later using -from", hash_prefix[:3])
+		failedHashPrefixes = append(failedHashPrefixes, hash_prefix)
+		log.Println("Unable to get hashes for prefix", hash_prefix, "Pls try again later using -from", hash_prefix[:3])
 	}
 
 	return hashes
+}
+
+func constructRetryableHttpClient() *http.Client {
+	retryable_http_client := retryablehttp.NewClient()
+	retryable_http_client.HTTPClient.Transport.(*http.Transport).MaxIdleConnsPerHost = 100
+	retryable_http_client.Logger = nil
+	retryable_http_client.RetryMax = config.HTTP_CLIENT_MAX_RETRY
+	retryable_http_client.RetryWaitMin = config.HTTP_CLIENT_RETRY_WAIT_MIN
+	retryable_http_client.RetryWaitMax = config.HTTP_CLIENT_RETRY_WAIT_MAX
+	retryable_http_client.CheckRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
+
+		shouldRetry, _ := retryablehttp.ErrorPropagatedRetryPolicy(ctx, resp, err)
+		// Special case inspection of 200 response for HIBP API response body
+		if !shouldRetry && resp.StatusCode == http.StatusOK && resp.Request.URL.Host == "api.pwnedpasswords.com" {
+			bufBodyReader := bufio.NewReader(resp.Body)
+			minExpectedLength := 37 // eg: 029AF39198D11182A63BE9303BB7602183F:1
+			data, errBuf := bufBodyReader.Peek(minExpectedLength)
+			resp.Body = io.NopCloser(bufBodyReader)
+			if errBuf != nil || len(data) < minExpectedLength {
+				log.Println("Retrying as we received an unexpected Response from HIBP", resp.Request.URL, "Response len:", len(data), "Error:", errBuf)
+				resp.Body.Close()
+				return true, errBuf
+			}
+
+		}
+		return shouldRetry, nil
+	}
+	return retryable_http_client.StandardClient()
 }
 
 func main() {
@@ -94,13 +117,6 @@ func main() {
 		log.Fatal("Store " + store_name + " not found. Please create the store before attempting to upload filters.")
 	}
 
-	// Create a HTTP client with retry logic for querying HIBP API
-	retryable_http_client := retryablehttp.NewClient()
-	retryable_http_client.HTTPClient.Transport.(*http.Transport).MaxIdleConnsPerHost = 100
-	retryable_http_client.Logger = nil
-	retryable_http_client.RetryMax = config.MAX_RETRY_FOR_HTTP_CLIENT
-	http_client := retryable_http_client.StandardClient()
-
 	// Range API accepts 5 characters, and we build 3 char filters
 	// So we need to generate 2 char prefixes to add to the 3 char prefixes, before querying the API
 	filter_prefixes := generatePrefixes(3, start_from_int)
@@ -114,7 +130,7 @@ func main() {
 		for _, hash_prefix_addition := range hash_prefix_additions {
 			hash_prefix := filter_prefix + hash_prefix_addition
 			go func(hash_prefix string) {
-				hashes := getHashesForRange(hash_prefix, http_client)
+				hashes := getHashesForRange(hash_prefix, globalHTTPClient)
 				queue <- &hashes
 			}(hash_prefix)
 		}
@@ -123,6 +139,7 @@ func main() {
 			hashes := <-queue
 			hashes_for_filter = append(hashes_for_filter, *hashes...)
 		}
+
 		// Build filter for the prefix
 		log.Println("Building filter for prefix", filter_prefix, "with", len(hashes_for_filter), "hashes")
 		filter := hibp.CreateFilterWithHashes(filter_prefix, hashes_for_filter)
@@ -133,9 +150,9 @@ func main() {
 		hibp.WriteFilterToWriter(filter, w)
 		data := b.Bytes()
 		log.Println("Uploading filter for prefix", filter_prefix, "with size:", len(data))
-		store.UploadFilterToStore(*token, store_obj, filter_prefix, data, http_client)
+		store.UploadFilterToStore(*token, store_obj, filter_prefix, data, globalHTTPClient)
 	}
 
 	log.Println("Done uplaoding filters to store", config.KV_STORE_NAME, "with store_id", store_obj.Id)
-
+	log.Println("Failed to get hashes for the following prefixes and were skipped:", failedHashPrefixes)
 }
