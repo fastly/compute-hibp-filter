@@ -17,6 +17,20 @@ import (
 	"github.com/hashicorp/go-retryablehttp"
 )
 
+var (
+	globalHTTPClient *http.Client = constructRetryableHttpClient()
+)
+
+func constructRetryableHttpClient() *http.Client {
+	retryable_http_client := retryablehttp.NewClient()
+	retryable_http_client.HTTPClient.Transport.(*http.Transport).MaxIdleConnsPerHost = 100
+	retryable_http_client.Logger = nil
+	retryable_http_client.RetryMax = config.HTTP_CLIENT_MAX_RETRY
+	retryable_http_client.RetryWaitMin = config.HTTP_CLIENT_RETRY_WAIT_MIN
+	retryable_http_client.RetryWaitMax = config.HTTP_CLIENT_RETRY_WAIT_MAX
+	return retryable_http_client.StandardClient()
+}
+
 func generatePrefixes(prefix_level int, start_from int64) []string {
 	var prefixes []string
 	combinations := math.Pow(16, float64(prefix_level))
@@ -51,7 +65,7 @@ func getHashesForRange(hash_prefix string, hibp_http_client *http.Client) []stri
 				// Prepare for retry after a short sleep. Since the status code is 200, it's not handled by retryablehttp
 				hashes = nil
 				hasValidResponseReceived = false
-				time.Sleep(time.Second)
+				time.Sleep(config.WAIT_TIME_FOR_INVALID_200_RESPONSES)
 				break
 			} else {
 				hasValidResponseReceived = true
@@ -94,13 +108,6 @@ func main() {
 		log.Fatal("Store " + store_name + " not found. Please create the store before attempting to upload filters.")
 	}
 
-	// Create a HTTP client with retry logic for querying HIBP API
-	retryable_http_client := retryablehttp.NewClient()
-	retryable_http_client.HTTPClient.Transport.(*http.Transport).MaxIdleConnsPerHost = 100
-	retryable_http_client.Logger = nil
-	retryable_http_client.RetryMax = config.MAX_RETRY_FOR_HTTP_CLIENT
-	http_client := retryable_http_client.StandardClient()
-
 	// Range API accepts 5 characters, and we build 3 char filters
 	// So we need to generate 2 char prefixes to add to the 3 char prefixes, before querying the API
 	filter_prefixes := generatePrefixes(3, start_from_int)
@@ -114,7 +121,7 @@ func main() {
 		for _, hash_prefix_addition := range hash_prefix_additions {
 			hash_prefix := filter_prefix + hash_prefix_addition
 			go func(hash_prefix string) {
-				hashes := getHashesForRange(hash_prefix, http_client)
+				hashes := getHashesForRange(hash_prefix, globalHTTPClient)
 				queue <- &hashes
 			}(hash_prefix)
 		}
@@ -133,7 +140,7 @@ func main() {
 		hibp.WriteFilterToWriter(filter, w)
 		data := b.Bytes()
 		log.Println("Uploading filter for prefix", filter_prefix, "with size:", len(data))
-		store.UploadFilterToStore(*token, store_obj, filter_prefix, data, http_client)
+		store.UploadFilterToStore(*token, store_obj, filter_prefix, data, globalHTTPClient)
 	}
 
 	log.Println("Done uplaoding filters to store", config.KV_STORE_NAME, "with store_id", store_obj.Id)
