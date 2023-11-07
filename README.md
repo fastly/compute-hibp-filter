@@ -1,11 +1,11 @@
 <h1 align="center">
-  <br> Password Compromise Check using Compute@Edge
+  <br> Password Compromise Check using Fastly Compute
 </h1>
 
 <h4 align="center">Enrich requests containing a password with a header to indicate if the password is compromised.</h4>
 
 ---
-This Compute@Edge service when setup in front of a backend, can inspect the passwords submitted either at login or signup, to verify if the password is compromised (leaked in previous known data breaches) using the [HaveIBeenPwned](https://haveibeenpwned.com/Passwords) passwords dataset. While this check can be done by using the HIBP [APIs](https://haveibeenpwned.com/API/v3#PwnedPasswords), this implementation uses pre-generated filters for the spilled password hashes, persisted on Fastly [KV Stores](https://docs.fastly.com/en/guides/working-with-kv-stores) for fast lookups. Once the password is verified to be compromised, the service adds a header to the request to indicate the same. The backend can then choose to reject the password (signup use-case), take user to a password reset page (login use-case), send a signal to a credential stuffing detector or take other actions.
+This Fastly Compute service when setup in front of a backend, can inspect the passwords submitted either at login or signup, to verify if the password is compromised (leaked in previous known data breaches) using the [HaveIBeenPwned](https://haveibeenpwned.com/Passwords) passwords dataset. While this check can be done by using the HIBP [APIs](https://haveibeenpwned.com/API/v3#PwnedPasswords), this implementation uses pre-generated filters for the spilled password hashes, persisted on Fastly [KV Stores](https://docs.fastly.com/en/guides/working-with-kv-stores) for fast lookups. Once the password is verified to be compromised, the service adds a header to the request to indicate the same. The backend can then choose to reject the password (signup use-case), take user to a password reset page (login use-case), send a signal to a credential stuffing detector or take other actions.
 
 We use [BinaryFuse8](https://pkg.go.dev/github.com/FastFilter/xorfilter@v0.1.4) filters with 9 bit fingerprints per entry. While filters are probablistic data structures, given the fingerprint size and load factors, we estimate a false positive rate of about 0.3%. The use of filters also compresses the dataset from about 38GB to 1GB. To further reduce resource consumption, we group the password hashes using a 3 character prefix, create a separate filter for each prefix and store them in a KV store. This allows us to only load the filters for the prefixes that are relevant to the password being checked. These prefix filters are typically about 250KB.
 
@@ -49,7 +49,7 @@ An additional `-from` flag is available to restart the upload from a specific pr
 $ go run cmd/upload/main.go -token <Fastly_API_token> -from A0F
 ```
 
-### 4. Deploy the Compute@Edge service
+### 4. Deploy the Fastly Compute service
 ```sh
 $ fastly compute publish
 
